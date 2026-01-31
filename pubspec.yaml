@@ -1,0 +1,69 @@
+name: agrisense_pro
+description: "AgriSense Pro - AI Crop Intelligence & Farmer Profit Engine. A comprehensive AI-powered agriculture intelligence platform for farmers worldwide."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # UI & Design
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  flutter_animate: ^4.5.2
+  shimmer: ^3.0.0
+  cached_network_image: ^3.4.1
+  flutter_svg: ^2.0.17
+  lottie: ^3.3.1
+  
+  # State Management
+  provider: ^6.1.5+1
+  
+  # Navigation
+  go_router: ^14.8.1
+  
+  # Charts & Visualization
+  fl_chart: ^0.70.2
+  syncfusion_flutter_charts: ^29.1.70
+  syncfusion_flutter_gauges: ^29.1.70
+  
+  # Storage
+  shared_preferences: ^2.5.3
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  
+  # Networking
+  http: ^1.5.0
+  
+  # Utilities
+  intl: ^0.20.2
+  uuid: ^4.5.1
+  url_launcher: ^6.3.1
+  
+  # Camera & Image
+  image_picker: ^1.1.2
+  
+  # Location
+  geolocator: ^13.0.2
+  geocoding: ^3.0.0
+  
+  # Animations
+  animate_do: ^3.3.4
+  
+  # Maps
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/icon/
