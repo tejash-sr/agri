@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:provider/provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../providers/auth_provider.dart';
+import '../../home/screens/home_screen.dart';
 import 'onboarding_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -15,23 +18,38 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _navigateToNextScreen();
+    _initializeAndNavigate();
   }
 
-  Future<void> _navigateToNextScreen() async {
-    await Future.delayed(const Duration(milliseconds: 3000));
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              const OnboardingScreen(),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return FadeTransition(opacity: animation, child: child);
-          },
-          transitionDuration: const Duration(milliseconds: 500),
-        ),
-      );
+  Future<void> _initializeAndNavigate() async {
+    // Initialize auth provider
+    final authProvider = context.read<AuthProvider>();
+    await authProvider.initialize();
+    
+    // Wait for splash screen animation (minimum 2 seconds)
+    await Future.delayed(const Duration(milliseconds: 2500));
+    
+    if (!mounted) return;
+    
+    // Navigate based on auth state
+    Widget nextScreen;
+    if (authProvider.isAuthenticated) {
+      // User is logged in, go to home
+      nextScreen = const HomeScreen();
+    } else {
+      // User is not logged in, show onboarding
+      nextScreen = const OnboardingScreen();
     }
+    
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => nextScreen,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 500),
+      ),
+    );
   }
 
   @override
@@ -71,7 +89,7 @@ class _SplashScreenState extends State<SplashScreen> {
                     ),
                   ],
                 ),
-                child: Center(
+                child: const Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -80,7 +98,7 @@ class _SplashScreenState extends State<SplashScreen> {
                         size: 60,
                         color: AppColors.primaryGreen,
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: 4),
                       Text(
                         '🌾',
                         style: TextStyle(fontSize: 28),

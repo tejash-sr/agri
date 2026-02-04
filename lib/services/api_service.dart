@@ -1,6 +1,6 @@
-/// AgriSense Pro - API Service
-/// Handles all communication with the custom backend API
-/// No BaaS - Direct REST API integration
+// AgriSense Pro - API Service
+// Handles all communication with the custom backend API
+// No BaaS - Direct REST API integration
 
 import 'dart:convert';
 import 'dart:io';
@@ -114,6 +114,17 @@ class ApiService {
   ApiService._internal();
   
   final http.Client _client = http.Client();
+  String? _authToken;
+  
+  /// Set auth token (used by AuthProvider)
+  void setAuthToken(String token) {
+    _authToken = token;
+  }
+  
+  /// Clear auth token
+  void clearAuthToken() {
+    _authToken = null;
+  }
   
   /// Get headers with authentication token
   Future<Map<String, String>> _getHeaders({bool requireAuth = true}) async {
@@ -260,7 +271,7 @@ class ApiService {
   // ==========================================================================
   
   /// Register a new user
-  Future<ApiResponse<Map<String, dynamic>>> register({
+  Future<Map<String, dynamic>> register({
     required String email,
     required String password,
     required String fullName,
@@ -281,17 +292,25 @@ class ApiService {
     
     if (response.success && response.data != null) {
       await TokenStorage.saveTokens(
-        accessToken: response.data!['access_token'],
-        refreshToken: response.data!['refresh_token'],
+        accessToken: response.data!['access_token'] ?? '',
+        refreshToken: response.data!['refresh_token'] ?? '',
         expiresIn: response.data!['expires_in'] ?? 1800,
       );
+      return {
+        'success': true,
+        'access_token': response.data!['access_token'],
+        'refresh_token': response.data!['refresh_token'],
+      };
     }
     
-    return response;
+    return {
+      'success': false,
+      'message': response.message ?? 'Registration failed',
+    };
   }
   
   /// Login user
-  Future<ApiResponse<Map<String, dynamic>>> login({
+  Future<Map<String, dynamic>> login({
     required String email,
     required String password,
   }) async {
@@ -306,49 +325,182 @@ class ApiService {
     
     if (response.success && response.data != null) {
       await TokenStorage.saveTokens(
-        accessToken: response.data!['access_token'],
-        refreshToken: response.data!['refresh_token'],
+        accessToken: response.data!['access_token'] ?? '',
+        refreshToken: response.data!['refresh_token'] ?? '',
         expiresIn: response.data!['expires_in'] ?? 1800,
       );
+      return {
+        'success': true,
+        'access_token': response.data!['access_token'],
+        'refresh_token': response.data!['refresh_token'],
+      };
     }
     
-    return response;
+    return {
+      'success': false,
+      'message': response.message ?? 'Login failed',
+    };
   }
   
   /// Logout user
-  Future<ApiResponse<void>> logout() async {
-    final response = await post<void>('/auth/logout');
+  Future<Map<String, dynamic>> logout() async {
+    try {
+      await post<void>('/auth/logout');
+    } catch (_) {
+      // Ignore logout API errors
+    }
     await TokenStorage.clearTokens();
-    return response;
+    clearAuthToken();
+    return {'success': true};
   }
   
   /// Get current user profile
-  Future<ApiResponse<Map<String, dynamic>>> getCurrentUser() async {
-    return get<Map<String, dynamic>>('/auth/me');
+  Future<Map<String, dynamic>> getCurrentUser() async {
+    final response = await get<Map<String, dynamic>>('/auth/me');
+    
+    if (response.success && response.data != null) {
+      return {
+        'success': true,
+        'data': response.data,
+      };
+    }
+    
+    return {
+      'success': false,
+      'message': response.message ?? 'Failed to get user profile',
+    };
   }
   
   /// Refresh access token
-  Future<ApiResponse<Map<String, dynamic>>> refreshToken() async {
-    final refreshToken = await TokenStorage.getRefreshToken();
-    if (refreshToken == null) {
-      return ApiResponse.error('No refresh token', 401);
+  Future<Map<String, dynamic>> refreshToken({String? refreshToken}) async {
+    final token = refreshToken ?? await TokenStorage.getRefreshToken();
+    if (token == null) {
+      return {'success': false, 'message': 'No refresh token'};
     }
     
     final response = await post<Map<String, dynamic>>(
       '/auth/refresh',
-      body: {'refresh_token': refreshToken},
+      body: {'refresh_token': token},
       requireAuth: false,
     );
     
     if (response.success && response.data != null) {
       await TokenStorage.saveTokens(
-        accessToken: response.data!['access_token'],
-        refreshToken: response.data!['refresh_token'],
+        accessToken: response.data!['access_token'] ?? '',
+        refreshToken: response.data!['refresh_token'] ?? '',
         expiresIn: response.data!['expires_in'] ?? 1800,
       );
+      return {
+        'success': true,
+        'access_token': response.data!['access_token'],
+        'refresh_token': response.data!['refresh_token'],
+      };
     }
     
-    return response;
+    return {
+      'success': false,
+      'message': response.message ?? 'Token refresh failed',
+    };
+  }
+  
+  /// Forgot password - request reset
+  Future<Map<String, dynamic>> forgotPassword({
+    required String email,
+  }) async {
+    final response = await post<Map<String, dynamic>>(
+      '/auth/forgot-password',
+      body: {'email': email},
+      requireAuth: false,
+    );
+    
+    return {
+      'success': response.success || response.statusCode == 200,
+      'message': response.data?['message'] ?? response.message ?? 'Reset link sent',
+    };
+  }
+  
+  /// Reset password with token
+  Future<Map<String, dynamic>> resetPassword({
+    required String token,
+    required String newPassword,
+  }) async {
+    final response = await post<Map<String, dynamic>>(
+      '/auth/reset-password',
+      body: {
+        'token': token,
+        'new_password': newPassword,
+      },
+      requireAuth: false,
+    );
+    
+    return {
+      'success': response.success,
+      'message': response.data?['message'] ?? response.message,
+    };
+  }
+  
+  /// Change password
+  Future<Map<String, dynamic>> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final response = await post<Map<String, dynamic>>(
+      '/auth/change-password',
+      body: {
+        'current_password': currentPassword,
+        'new_password': newPassword,
+      },
+    );
+    
+    return {
+      'success': response.success,
+      'message': response.data?['message'] ?? response.message,
+    };
+  }
+  
+  /// Update user profile
+  Future<Map<String, dynamic>> updateProfile({
+    String? fullName,
+    String? phone,
+    String? avatarUrl,
+    String? address,
+    String? city,
+    String? district,
+    String? state,
+    String? pincode,
+    double? latitude,
+    double? longitude,
+    String? language,
+    bool? notificationEnabled,
+  }) async {
+    final Map<String, dynamic> body = {};
+    
+    if (fullName != null) body['full_name'] = fullName;
+    if (phone != null) body['phone'] = phone;
+    if (avatarUrl != null) body['avatar_url'] = avatarUrl;
+    if (address != null) body['address'] = address;
+    if (city != null) body['city'] = city;
+    if (district != null) body['district'] = district;
+    if (state != null) body['state'] = state;
+    if (pincode != null) body['pincode'] = pincode;
+    if (latitude != null) body['latitude'] = latitude;
+    if (longitude != null) body['longitude'] = longitude;
+    if (language != null) body['language'] = language;
+    if (notificationEnabled != null) body['notification_enabled'] = notificationEnabled;
+    
+    final response = await put<Map<String, dynamic>>('/auth/profile', body: body);
+    
+    if (response.success && response.data != null) {
+      return {
+        'success': true,
+        'data': response.data,
+      };
+    }
+    
+    return {
+      'success': false,
+      'message': response.message ?? 'Profile update failed',
+    };
   }
   
   // ==========================================================================

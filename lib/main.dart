@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'providers/app_provider.dart';
+import 'providers/auth_provider.dart';
 import 'features/auth/screens/splash_screen.dart';
 
 void main() async {
@@ -38,6 +39,9 @@ class AgriSenseApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        // Auth Provider - handles authentication state
+        ChangeNotifierProvider(create: (_) => AuthProvider()),
+        // App Provider - handles app-wide state and data
         ChangeNotifierProvider(create: (_) => AppProvider()),
       ],
       child: MaterialApp(

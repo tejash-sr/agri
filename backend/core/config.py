@@ -1,13 +1,36 @@
 """
 AgriSense Pro - Configuration Management
 All configuration via environment variables with sensible defaults for local development
+SECURITY: Uses python-dotenv for .env file support and secure secret key generation
 """
 
 import os
+import secrets
 from datetime import timedelta
-from typing import Optional
+from typing import List, Optional
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
+from pathlib import Path
+
+# Load .env file if it exists
+from dotenv import load_dotenv
+
+# Try to load from multiple possible locations
+env_paths = [
+    Path(__file__).parent.parent / ".env",  # backend/.env
+    Path.cwd() / ".env",  # current directory
+]
+
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+
+
+def generate_secure_key() -> str:
+    """Generate a cryptographically secure secret key for development"""
+    return secrets.token_urlsafe(64)
 
 
 class Settings(BaseSettings):
@@ -49,8 +72,11 @@ class Settings(BaseSettings):
     # =========================================================================
     # SECURITY SETTINGS
     # =========================================================================
-    # JWT Settings
-    SECRET_KEY: str = "YOUR_SECRET_KEY_HERE_CHANGE_IN_PRODUCTION_MIN_32_CHARS"
+    # JWT Settings - SECRET_KEY loaded from environment or generated securely
+    SECRET_KEY: str = os.environ.get(
+        "SECRET_KEY",
+        generate_secure_key() if os.environ.get("ENVIRONMENT") != "production" else ""
+    )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -59,11 +85,51 @@ class Settings(BaseSettings):
     PASSWORD_MIN_LENGTH: int = 8
     BCRYPT_ROUNDS: int = 12
     
-    # CORS Settings
-    CORS_ORIGINS: list = ["*"]  # Restrict in production
+    # CORS Settings - Restricted for security
+    # Override with CORS_ORIGINS env var as comma-separated list
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "http://localhost:5060",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:5060",
+    ]
     CORS_ALLOW_CREDENTIALS: bool = True
-    CORS_ALLOW_METHODS: list = ["*"]
-    CORS_ALLOW_HEADERS: list = ["*"]
+    CORS_ALLOW_METHODS: List[str] = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    CORS_ALLOW_HEADERS: List[str] = [
+        "Authorization",
+        "Content-Type",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "X-CSRF-Token",
+    ]
+    
+    @field_validator('SECRET_KEY')
+    @classmethod
+    def validate_secret_key(cls, v, info):
+        """Ensure SECRET_KEY is set in production"""
+        env = os.environ.get("ENVIRONMENT", "development")
+        if env == "production" and (not v or v == "" or len(v) < 32):
+            raise ValueError(
+                "SECRET_KEY must be set to a secure value (minimum 32 characters) in production! "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
+        if len(v) < 32:
+            # Auto-generate for development if too short
+            return generate_secure_key()
+        return v
+    
+    @field_validator('CORS_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS_ORIGINS from comma-separated string if needed"""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        return v
     
     # =========================================================================
     # EXTERNAL API KEYS (Free Tier Placeholders)
@@ -127,7 +193,7 @@ class Settings(BaseSettings):
     # FILE UPLOAD SETTINGS
     # =========================================================================
     MAX_UPLOAD_SIZE_MB: int = 10
-    ALLOWED_IMAGE_TYPES: list = ["image/jpeg", "image/png", "image/webp"]
+    ALLOWED_IMAGE_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
     UPLOAD_DIR: str = "./uploads"
     
     # =========================================================================
@@ -148,8 +214,10 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"
 
 
+# Clear cache to allow regeneration
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings instance"""
@@ -181,75 +249,16 @@ def get_refresh_token_expires() -> timedelta:
     return timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 
 
-# =========================================================================
-# ENVIRONMENT VARIABLE TEMPLATE (.env.example)
-# =========================================================================
-ENV_TEMPLATE = """
-# =========================================================================
-# AgriSense Pro - Environment Variables
-# Copy this file to .env and fill in your values
-# =========================================================================
+def is_production() -> bool:
+    """Check if running in production environment"""
+    return settings.ENVIRONMENT.lower() == "production"
 
-# Application
-APP_NAME=AgriSense Pro
-DEBUG=true
-ENVIRONMENT=development
 
-# Server
-HOST=0.0.0.0
-PORT=8000
-
-# Database (PostgreSQL)
-DATABASE_URL=postgresql://agrisense:agrisense123@localhost:5432/agrisense_db
-USE_SQLITE=true
-
-# Security (CHANGE THESE IN PRODUCTION!)
-SECRET_KEY=your-super-secret-key-minimum-32-characters-long
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-REFRESH_TOKEN_EXPIRE_DAYS=7
-
-# Weather API (Free tier)
-# Get key: https://openweathermap.org/api
-OPENWEATHERMAP_API_KEY=your_openweathermap_key
-
-# Alternative Weather API
-# Get key: https://www.weatherapi.com/
-WEATHERAPI_KEY=your_weatherapi_key
-
-# Maps (Free tier)
-# Get key: https://www.mapbox.com/
-MAPBOX_API_KEY=your_mapbox_key
-
-# AI/ML APIs (Free tier)
-# Get key: https://huggingface.co/settings/tokens
-HUGGINGFACE_API_KEY=your_huggingface_key
-
-# Google Gemini (Free tier)
-# Get key: https://makersuite.google.com/app/apikey
-GOOGLE_GEMINI_API_KEY=your_gemini_key
-
-# SMS (Free trial)
-# Get: https://www.twilio.com/try-twilio
-TWILIO_ACCOUNT_SID=your_twilio_sid
-TWILIO_AUTH_TOKEN=your_twilio_token
-TWILIO_PHONE_NUMBER=+1234567890
-
-# Email (Free tier)
-# Get key: https://signup.sendgrid.com/
-SENDGRID_API_KEY=your_sendgrid_key
-FROM_EMAIL=noreply@agrisensepro.com
-
-# Market Data
-# Register: https://data.gov.in/
-DATA_GOV_IN_API_KEY=your_data_gov_key
-
-# Image Storage (Free tier)
-# Get: https://cloudinary.com/
-CLOUDINARY_CLOUD_NAME=your_cloud_name
-CLOUDINARY_API_KEY=your_cloudinary_key
-CLOUDINARY_API_SECRET=your_cloudinary_secret
-
-# Push Notifications (Free)
-# Setup: https://console.firebase.google.com/
-FCM_SERVER_KEY=your_fcm_key
-"""
+def get_allowed_cors_origins() -> List[str]:
+    """Get CORS origins list, adding production domains if configured"""
+    origins = list(settings.CORS_ORIGINS)
+    # Add any additional production origins from environment
+    extra_origins = os.environ.get("EXTRA_CORS_ORIGINS", "")
+    if extra_origins:
+        origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+    return origins

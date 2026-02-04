@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../features/home/models/weather_model.dart';
 import '../features/farm/models/farm_model.dart';
 import '../features/disease_scanner/models/disease_model.dart';
@@ -7,13 +7,19 @@ import '../features/price_forecast/models/price_model.dart';
 import '../features/marketplace/models/listing_model.dart';
 import '../features/alerts/models/alert_model.dart';
 import '../features/finance/models/finance_model.dart';
+import '../services/api_service.dart';
 
+/// App-wide state provider managing data and API integration
 class AppProvider extends ChangeNotifier {
+  // API Service
+  final ApiService _apiService = ApiService();
+  
   // User Info
-  String _userName = 'Rajesh Kumar';
-  String _userPhone = '+91 98765 43210';
-  String _userLocation = 'Nashik, Maharashtra';
-  String _userAvatar = '';
+  String _userName = 'Farmer';
+  String _userPhone = '';
+  String _userLocation = 'India';
+  String _userId = '';
+  final String _userAvatar = '';
   
   // Farm Data
   Farm? _currentFarm;
@@ -48,13 +54,16 @@ class AppProvider extends ChangeNotifier {
   
   // App State
   bool _isLoading = false;
+  bool _isInitialized = false;
   int _currentNavIndex = 0;
   String _selectedLanguage = 'en';
+  String? _errorMessage;
   
   // Getters
   String get userName => _userName;
   String get userPhone => _userPhone;
   String get userLocation => _userLocation;
+  String get userId => _userId;
   String get userAvatar => _userAvatar;
   Farm? get currentFarm => _currentFarm;
   List<Farm> get farms => _farms;
@@ -70,12 +79,230 @@ class AppProvider extends ChangeNotifier {
   List<MarketListing> get marketplaceListings => _marketplaceListings;
   FinanceSummary? get financeSummary => _financeSummary;
   bool get isLoading => _isLoading;
+  bool get isInitialized => _isInitialized;
   int get currentNavIndex => _currentNavIndex;
   String get selectedLanguage => _selectedLanguage;
+  String? get errorMessage => _errorMessage;
   
-  // Initialize with demo data
+  // Initialize with demo data by default
   AppProvider() {
     _initializeDemoData();
+  }
+  
+  /// Initialize app data - tries API first, falls back to demo data
+  Future<void> initializeData({String? userId, String? userName}) async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    
+    if (userId != null) _userId = userId;
+    if (userName != null) _userName = userName;
+    
+    try {
+      // Try to load from API
+      await Future.wait([
+        _loadFarmsFromApi(),
+        _loadMarketplaceFromApi(),
+        _loadPricesFromApi(),
+      ]);
+      
+      // If we have farms, load weather for the primary farm
+      if (_currentFarm != null && 
+          _currentFarm!.latitude != null && 
+          _currentFarm!.longitude != null) {
+        await _loadWeatherFromApi(
+          _currentFarm!.latitude!,
+          _currentFarm!.longitude!,
+        );
+      }
+      
+      _isInitialized = true;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Failed to load from API, using demo data: $e');
+      }
+      _initializeDemoData();
+    }
+    
+    _isLoading = false;
+    notifyListeners();
+  }
+  
+  /// Load farms from API
+  Future<void> _loadFarmsFromApi() async {
+    try {
+      final response = await _apiService.getFarms();
+      if (response.success && response.data != null) {
+        _farms = (response.data as List).map((json) => Farm(
+          id: json['id'] ?? '',
+          name: json['name'] ?? '',
+          location: '${json['district'] ?? ''}, ${json['state'] ?? ''}',
+          latitude: json['latitude']?.toDouble(),
+          longitude: json['longitude']?.toDouble(),
+          totalArea: json['total_area_acres']?.toDouble() ?? 0,
+          areaUnit: 'Acres',
+          soilType: json['soil_type'] ?? '',
+          irrigationType: json['irrigation_type'] ?? 'manual',
+          crops: [],
+          createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
+        )).toList();
+        
+        if (_farms.isNotEmpty) {
+          _currentFarm = _farms.first;
+          _userLocation = _currentFarm!.location;
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error loading farms: $e');
+      }
+    }
+  }
+  
+  /// Load weather from API
+  Future<void> _loadWeatherFromApi(double lat, double lon) async {
+    try {
+      final response = await _apiService.getCurrentWeather(
+        latitude: lat,
+        longitude: lon,
+      );
+      
+      if (response.success && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        _currentWeather = WeatherData(
+          temperature: data['temperature_celsius']?.toDouble() ?? 0,
+          humidity: data['humidity_percent'] ?? 0,
+          windSpeed: data['wind_speed_kmh']?.toDouble() ?? 0,
+          condition: data['weather_description'] ?? 'Unknown',
+          icon: data['icon_code'] ?? 'sunny',
+          feelsLike: data['feels_like_celsius']?.toDouble() ?? 0,
+          uvIndex: data['uv_index']?.toDouble() ?? 0,
+          precipitation: data['rain_mm']?.toDouble() ?? 0,
+          visibility: data['visibility_km']?.toDouble() ?? 10,
+          pressure: data['pressure_hpa']?.toDouble() ?? 1013,
+          sunrise: '06:00 AM',
+          sunset: '06:30 PM',
+        );
+      }
+      
+      // Load forecast
+      final forecastResponse = await _apiService.getWeatherForecast(
+        latitude: lat,
+        longitude: lon,
+        days: 7,
+      );
+      
+      if (forecastResponse.success && forecastResponse.data != null) {
+        _weatherForecast = (forecastResponse.data as List).map((json) {
+          return WeatherForecast(
+            day: json['date'] ?? '',
+            high: json['temp_max']?.toDouble() ?? 0,
+            low: json['temp_min']?.toDouble() ?? 0,
+            condition: json['weather_description'] ?? '',
+            icon: json['icon_code'] ?? 'sunny',
+            rainChance: json['rain_chance'] ?? 0,
+          );
+        }).toList();
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error loading weather: $e');
+      }
+    }
+  }
+  
+  /// Load marketplace listings from API
+  Future<void> _loadMarketplaceFromApi() async {
+    try {
+      final response = await _apiService.getListings();
+      if (response.success && response.data != null) {
+        _marketplaceListings = (response.data as List).map((json) => MarketListing(
+          id: json['id'] ?? '',
+          farmerId: json['user_id'] ?? '',
+          farmerName: json['seller_name'] ?? 'Unknown',
+          cropName: json['crop_name'] ?? '',
+          quantity: json['quantity']?.toDouble() ?? 0,
+          unit: json['unit'] ?? 'kg',
+          pricePerUnit: json['price_per_unit']?.toDouble() ?? 0,
+          quality: json['grade'] ?? 'Standard',
+          description: json['description'] ?? '',
+          images: json['images'] != null ? List<String>.from(json['images']) : [],
+          location: '${json['city'] ?? ''}, ${json['state'] ?? ''}',
+          availableFrom: DateTime.tryParse(json['available_from'] ?? '') ?? DateTime.now(),
+          availableUntil: DateTime.tryParse(json['expires_at'] ?? '') ?? DateTime.now().add(const Duration(days: 30)),
+          status: _parseListingStatus(json['status']),
+          bids: json['inquiries_count'] ?? 0,
+          views: json['views_count'] ?? 0,
+          createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
+        )).toList();
+      }
+      
+      // Load my listings if authenticated
+      final myResponse = await _apiService.getMyListings();
+      if (myResponse.success && myResponse.data != null) {
+        _myListings = (myResponse.data as List).map((json) => MarketListing(
+          id: json['id'] ?? '',
+          farmerId: json['user_id'] ?? '',
+          farmerName: _userName,
+          cropName: json['crop_name'] ?? '',
+          quantity: json['quantity']?.toDouble() ?? 0,
+          unit: json['unit'] ?? 'kg',
+          pricePerUnit: json['price_per_unit']?.toDouble() ?? 0,
+          quality: json['grade'] ?? 'Standard',
+          description: json['description'] ?? '',
+          images: json['images'] != null ? List<String>.from(json['images']) : [],
+          location: '${json['city'] ?? ''}, ${json['state'] ?? ''}',
+          availableFrom: DateTime.tryParse(json['available_from'] ?? '') ?? DateTime.now(),
+          availableUntil: DateTime.tryParse(json['expires_at'] ?? '') ?? DateTime.now().add(const Duration(days: 30)),
+          status: _parseListingStatus(json['status']),
+          bids: json['inquiries_count'] ?? 0,
+          views: json['views_count'] ?? 0,
+          createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
+        )).toList();
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error loading marketplace: $e');
+      }
+    }
+  }
+  
+  /// Load prices from API
+  Future<void> _loadPricesFromApi() async {
+    try {
+      final response = await _apiService.getCurrentPrices();
+      if (response.success && response.data != null) {
+        _priceData = (response.data as List).map((json) => CropPrice(
+          cropName: json['crop_name'] ?? '',
+          currentPrice: json['modal_price']?.toDouble() ?? 0,
+          unit: 'per quintal',
+          changePercent: 0, // Calculate from historical
+          isIncreasing: true,
+          marketName: json['market_name'] ?? '',
+          lastUpdated: DateTime.tryParse(json['recorded_date'] ?? '') ?? DateTime.now(),
+          priceHistory: [],
+          predictedPrice: json['modal_price']?.toDouble(),
+          bestSellDate: DateTime.now().add(const Duration(days: 7)),
+        )).toList();
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error loading prices: $e');
+      }
+    }
+  }
+  
+  ListingStatus _parseListingStatus(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'active':
+        return ListingStatus.active;
+      case 'sold':
+        return ListingStatus.sold;
+      case 'expired':
+        return ListingStatus.expired;
+      default:
+        return ListingStatus.active;
+    }
   }
   
   void _initializeDemoData() {
@@ -353,10 +580,14 @@ class AppProvider extends ChangeNotifier {
       ),
     ];
     
+    _isInitialized = true;
     notifyListeners();
   }
   
-  // Methods
+  // ===========================================================================
+  // Action Methods
+  // ===========================================================================
+  
   void setNavIndex(int index) {
     _currentNavIndex = index;
     notifyListeners();
@@ -381,6 +612,12 @@ class AppProvider extends ChangeNotifier {
     }
   }
   
+  void dismissAlert(String alertId) {
+    _alerts.removeWhere((a) => a.id == alertId);
+    _unreadAlerts = _alerts.where((a) => !a.isRead).length;
+    notifyListeners();
+  }
+  
   void addScanResult(DiseaseScanResult result) {
     _recentScans.insert(0, result);
     notifyListeners();
@@ -391,24 +628,180 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
   
+  void removeMarketListing(String listingId) {
+    _myListings.removeWhere((l) => l.id == listingId);
+    notifyListeners();
+  }
+  
   void setLanguage(String langCode) {
     _selectedLanguage = langCode;
     notifyListeners();
   }
   
-  void updateUserInfo({String? name, String? phone, String? location}) {
+  void updateUserInfo({String? name, String? phone, String? location, String? id}) {
     if (name != null) _userName = name;
     if (phone != null) _userPhone = phone;
     if (location != null) _userLocation = location;
+    if (id != null) _userId = id;
     notifyListeners();
   }
   
-  void refreshData() {
+  /// Add a new farm
+  Future<bool> addFarm(Farm farm) async {
+    try {
+      final response = await _apiService.createFarm(
+        name: farm.name,
+        totalAreaAcres: farm.totalArea,
+        farmType: 'small',
+        address: farm.location,
+        soilType: farm.soilType,
+        irrigationType: farm.irrigationType,
+        latitude: farm.latitude,
+        longitude: farm.longitude,
+        isPrimary: _farms.isEmpty,
+      );
+      
+      if (response.success) {
+        _farms.add(farm);
+        if (_currentFarm == null) {
+          _currentFarm = farm;
+        }
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error adding farm: $e');
+      }
+    }
+    
+    // Fallback: add locally
+    _farms.add(farm);
+    if (_currentFarm == null) {
+      _currentFarm = farm;
+    }
+    notifyListeners();
+    return true;
+  }
+  
+  /// Update farm
+  Future<bool> updateFarm(Farm farm) async {
+    try {
+      final response = await _apiService.updateFarm(farm.id, {
+        'name': farm.name,
+        'total_area_acres': farm.totalArea,
+        'soil_type': farm.soilType,
+        'irrigation_type': farm.irrigationType,
+        'latitude': farm.latitude,
+        'longitude': farm.longitude,
+      });
+      
+      if (response.success) {
+        final index = _farms.indexWhere((f) => f.id == farm.id);
+        if (index != -1) {
+          _farms[index] = farm;
+          if (_currentFarm?.id == farm.id) {
+            _currentFarm = farm;
+          }
+        }
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error updating farm: $e');
+      }
+    }
+    
+    // Fallback: update locally
+    final index = _farms.indexWhere((f) => f.id == farm.id);
+    if (index != -1) {
+      _farms[index] = farm;
+      if (_currentFarm?.id == farm.id) {
+        _currentFarm = farm;
+      }
+    }
+    notifyListeners();
+    return true;
+  }
+  
+  /// Delete farm
+  Future<bool> deleteFarm(String farmId) async {
+    try {
+      final response = await _apiService.deleteFarm(farmId);
+      if (response.success) {
+        _farms.removeWhere((f) => f.id == farmId);
+        if (_currentFarm?.id == farmId) {
+          _currentFarm = _farms.isNotEmpty ? _farms.first : null;
+        }
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error deleting farm: $e');
+      }
+    }
+    
+    // Fallback: delete locally
+    _farms.removeWhere((f) => f.id == farmId);
+    if (_currentFarm?.id == farmId) {
+      _currentFarm = _farms.isNotEmpty ? _farms.first : null;
+    }
+    notifyListeners();
+    return true;
+  }
+  
+  /// Set current farm
+  void setCurrentFarm(Farm farm) {
+    _currentFarm = farm;
+    _userLocation = farm.location;
+    notifyListeners();
+    
+    // Reload weather for new farm
+    if (farm.latitude != null && farm.longitude != null) {
+      _loadWeatherFromApi(farm.latitude!, farm.longitude!);
+    }
+  }
+  
+  /// Refresh all data
+  Future<void> refreshData() async {
     setLoading(true);
-    // Simulate API call
-    Future.delayed(const Duration(seconds: 1), () {
-      _initializeDemoData();
-      setLoading(false);
-    });
+    _errorMessage = null;
+    
+    try {
+      await Future.wait([
+        _loadFarmsFromApi(),
+        _loadMarketplaceFromApi(),
+        _loadPricesFromApi(),
+      ]);
+      
+      if (_currentFarm != null && 
+          _currentFarm!.latitude != null && 
+          _currentFarm!.longitude != null) {
+        await _loadWeatherFromApi(
+          _currentFarm!.latitude!,
+          _currentFarm!.longitude!,
+        );
+      }
+    } catch (e) {
+      _errorMessage = 'Failed to refresh data. Please try again.';
+      if (kDebugMode) {
+        debugPrint('Refresh error: $e');
+      }
+    }
+    
+    setLoading(false);
+  }
+  
+  /// Clear error message
+  void clearError() {
+    _errorMessage = null;
+    notifyListeners();
+  }
+  
+  /// Reset to demo data
+  void resetToDemo() {
+    _initializeDemoData();
   }
 }

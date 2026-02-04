@@ -1,17 +1,20 @@
 """
 AgriSense Pro - Authentication Routes
-Manual implementation of auth endpoints
+Manual implementation of auth endpoints with complete auth flow
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi import APIRouter, HTTPException, Depends, status, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import uuid
+import secrets
 
 from models.schemas import (
     UserRegister, UserLogin, TokenResponse, RefreshTokenRequest,
-    UserResponse, ErrorResponse, PasswordChange, BaseResponse
+    UserResponse, ErrorResponse, PasswordChange, BaseResponse,
+    ForgotPasswordRequest, ForgotPasswordResponse,
+    VerifyEmailRequest, VerifyEmailResponse, ProfileUpdateRequest
 )
 from core.security import (
     hash_password, verify_password, validate_password_strength,
@@ -404,3 +407,377 @@ async def delete_account(current_user: dict = Depends(get_current_user)):
     )
     
     return BaseResponse(message="Account deleted successfully")
+
+
+# =========================================================================
+# FORGOT PASSWORD / RESET PASSWORD ENDPOINTS
+# =========================================================================
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    request: Request,
+    forgot_request: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Request password reset.
+    
+    - Validates email exists
+    - Generates password reset token
+    - Stores token with expiration
+    - (In production) Sends email with reset link
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Rate limiting for password reset attempts
+    is_allowed, _ = rate_limiter.is_allowed(f"forgot_password:{client_ip}", 5, 3600)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many password reset attempts. Please try again later."
+        )
+    
+    # Find user by email
+    user = db.fetch_one(
+        "SELECT id, email, full_name FROM users WHERE email = ? AND is_active = 1",
+        (forgot_request.email.lower(),)
+    )
+    
+    # Always return success even if email doesn't exist (security best practice)
+    # This prevents email enumeration attacks
+    if user is None:
+        return ForgotPasswordResponse(
+            message="If this email exists, a password reset link will be sent.",
+            email=forgot_request.email
+        )
+    
+    # Generate secure reset token
+    reset_token = secrets.token_urlsafe(32)
+    token_expires = datetime.utcnow() + timedelta(hours=1)
+    
+    # Store reset token (using user_sessions table with special type)
+    token_id = generate_uuid()
+    db.execute("""
+        INSERT INTO user_sessions (id, user_id, refresh_token, device_info, expires_at, created_at, is_valid)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+    """, (
+        token_id,
+        user["id"],
+        f"reset:{reset_token}",  # Prefix to identify reset tokens
+        "password_reset",
+        token_expires.isoformat(),
+        now_iso()
+    ))
+    
+    # In production, send email with reset link
+    # For now, we'll log it (replace with actual email service)
+    reset_link = f"http://localhost:8000/reset-password?token={reset_token}"
+    
+    # Background task to send email (placeholder - implement with SendGrid)
+    # background_tasks.add_task(send_reset_email, user["email"], user["full_name"], reset_link)
+    
+    return ForgotPasswordResponse(
+        message="If this email exists, a password reset link will be sent.",
+        email=forgot_request.email
+    )
+
+
+@router.post("/reset-password", response_model=BaseResponse)
+async def reset_password(request: Request, reset_data: dict):
+    """
+    Reset password using token.
+    
+    Request body:
+    - token: Password reset token from email
+    - new_password: New password (min 8 chars)
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Rate limiting
+    is_allowed, _ = rate_limiter.is_allowed(f"reset_password:{client_ip}", 10, 3600)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many reset attempts. Please try again later."
+        )
+    
+    token = reset_data.get("token")
+    new_password = reset_data.get("new_password")
+    
+    if not token or not new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token and new password are required"
+        )
+    
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters"
+        )
+    
+    # Find reset token
+    session = db.fetch_one("""
+        SELECT s.*, u.id as uid 
+        FROM user_sessions s 
+        JOIN users u ON s.user_id = u.id
+        WHERE s.refresh_token = ? 
+        AND s.is_valid = 1 
+        AND s.device_info = 'password_reset'
+        AND u.is_active = 1
+    """, (f"reset:{token}",))
+    
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+    
+    # Check if token expired
+    expires_at = datetime.fromisoformat(session["expires_at"])
+    if datetime.utcnow() > expires_at:
+        # Invalidate expired token
+        db.execute(
+            "UPDATE user_sessions SET is_valid = 0 WHERE id = ?",
+            (session["id"],)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token has expired. Please request a new one."
+        )
+    
+    # Validate password strength
+    is_valid, error_msg = validate_password_strength(new_password)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_msg
+        )
+    
+    # Update password
+    new_hash = hash_password(new_password)
+    db.execute(
+        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+        (new_hash, now_iso(), session["user_id"])
+    )
+    
+    # Invalidate reset token
+    db.execute(
+        "UPDATE user_sessions SET is_valid = 0 WHERE id = ?",
+        (session["id"],)
+    )
+    
+    # Invalidate all other sessions (force re-login everywhere)
+    db.execute(
+        "UPDATE user_sessions SET is_valid = 0 WHERE user_id = ? AND device_info != 'password_reset'",
+        (session["user_id"],)
+    )
+    
+    return BaseResponse(message="Password reset successfully. Please login with your new password.")
+
+
+# =========================================================================
+# EMAIL VERIFICATION ENDPOINTS
+# =========================================================================
+
+@router.post("/verify-email", response_model=VerifyEmailResponse)
+async def verify_email(verify_request: VerifyEmailRequest):
+    """
+    Verify email using token sent to user's email.
+    """
+    # Find verification token
+    session = db.fetch_one("""
+        SELECT s.*, u.id as uid, u.email 
+        FROM user_sessions s 
+        JOIN users u ON s.user_id = u.id
+        WHERE s.refresh_token = ? 
+        AND s.is_valid = 1 
+        AND s.device_info = 'email_verification'
+    """, (f"verify:{verify_request.token}",))
+    
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token"
+        )
+    
+    # Check expiration
+    expires_at = datetime.fromisoformat(session["expires_at"])
+    if datetime.utcnow() > expires_at:
+        db.execute(
+            "UPDATE user_sessions SET is_valid = 0 WHERE id = ?",
+            (session["id"],)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification token has expired. Please request a new one."
+        )
+    
+    # Mark email as verified
+    db.execute(
+        "UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?",
+        (now_iso(), session["user_id"])
+    )
+    
+    # Invalidate verification token
+    db.execute(
+        "UPDATE user_sessions SET is_valid = 0 WHERE id = ?",
+        (session["id"],)
+    )
+    
+    return VerifyEmailResponse(
+        message="Email verified successfully!",
+        verified=True
+    )
+
+
+@router.post("/resend-verification", response_model=BaseResponse)
+async def resend_verification(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Resend email verification link.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Rate limiting
+    is_allowed, _ = rate_limiter.is_allowed(f"resend_verify:{client_ip}", 3, 3600)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many verification requests. Please try again later."
+        )
+    
+    if current_user.get("email_verified"):
+        return BaseResponse(message="Email is already verified.")
+    
+    # Invalidate old verification tokens
+    db.execute("""
+        UPDATE user_sessions SET is_valid = 0 
+        WHERE user_id = ? AND device_info = 'email_verification'
+    """, (current_user["id"],))
+    
+    # Generate new verification token
+    verify_token = secrets.token_urlsafe(32)
+    token_expires = datetime.utcnow() + timedelta(hours=24)
+    
+    token_id = generate_uuid()
+    db.execute("""
+        INSERT INTO user_sessions (id, user_id, refresh_token, device_info, expires_at, created_at, is_valid)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+    """, (
+        token_id,
+        current_user["id"],
+        f"verify:{verify_token}",
+        "email_verification",
+        token_expires.isoformat(),
+        now_iso()
+    ))
+    
+    # In production, send email (placeholder)
+    # background_tasks.add_task(send_verification_email, current_user["email"], verify_token)
+    
+    return BaseResponse(message="Verification email sent. Please check your inbox.")
+
+
+# =========================================================================
+# PROFILE UPDATE ENDPOINT
+# =========================================================================
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    profile_data: ProfileUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update current user's profile.
+    
+    Updates only the fields that are provided (non-null).
+    """
+    # Build update fields dynamically
+    update_fields = []
+    params = []
+    
+    field_mapping = {
+        "full_name": "full_name",
+        "phone": "phone",
+        "avatar_url": "avatar_url",
+        "address": "address",
+        "city": "city",
+        "district": "district",
+        "state": "state",
+        "pincode": "pincode",
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "language": "language",
+        "preferred_units": "preferred_units",
+        "notification_enabled": "notification_enabled",
+    }
+    
+    for field_name, db_column in field_mapping.items():
+        value = getattr(profile_data, field_name, None)
+        if value is not None:
+            # Handle boolean conversion for notification_enabled
+            if field_name == "notification_enabled":
+                value = 1 if value else 0
+            update_fields.append(f"{db_column} = ?")
+            params.append(value)
+    
+    if not update_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update"
+        )
+    
+    # Check phone uniqueness if updating phone
+    if profile_data.phone:
+        existing_phone = db.fetch_one(
+            "SELECT id FROM users WHERE phone = ? AND id != ?",
+            (profile_data.phone, current_user["id"])
+        )
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already in use"
+            )
+    
+    # Add updated_at
+    update_fields.append("updated_at = ?")
+    params.append(now_iso())
+    
+    # Add user_id for WHERE clause
+    params.append(current_user["id"])
+    
+    # Execute update
+    query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ?"
+    db.execute(query, tuple(params))
+    
+    # Fetch updated user
+    updated_user = db.fetch_one(
+        "SELECT * FROM users WHERE id = ?",
+        (current_user["id"],)
+    )
+    
+    return UserResponse(
+        id=updated_user["id"],
+        email=updated_user["email"],
+        phone=updated_user.get("phone"),
+        full_name=updated_user["full_name"],
+        avatar_url=updated_user.get("avatar_url"),
+        role=updated_user["role"],
+        subscription_tier=updated_user.get("subscription_tier", "free"),
+        address=updated_user.get("address"),
+        city=updated_user.get("city"),
+        district=updated_user.get("district"),
+        state=updated_user.get("state"),
+        pincode=updated_user.get("pincode"),
+        latitude=updated_user.get("latitude"),
+        longitude=updated_user.get("longitude"),
+        language=updated_user.get("language", "en"),
+        notification_enabled=bool(updated_user.get("notification_enabled", 1)),
+        email_verified=bool(updated_user.get("email_verified", 0)),
+        phone_verified=bool(updated_user.get("phone_verified", 0)),
+        created_at=datetime.fromisoformat(updated_user["created_at"])
+    )

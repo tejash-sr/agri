@@ -158,6 +158,54 @@ class PasswordResetConfirm(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request"""
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Forgot password response"""
+    message: str
+    email: str
+
+
+class VerifyEmailRequest(BaseModel):
+    """Email verification request"""
+    token: str
+
+
+class VerifyEmailResponse(BaseModel):
+    """Email verification response"""
+    message: str
+    verified: bool = True
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Profile update request"""
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    avatar_url: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    language: Optional[str] = None
+    preferred_units: Optional[str] = None
+    notification_enabled: Optional[bool] = None
+    
+    @validator('phone')
+    def validate_phone(cls, v):
+        if v:
+            import re
+            cleaned = v.replace(" ", "").replace("-", "")
+            if not re.match(r'^(\+91|91|0)?[6-9]\d{9}$', cleaned):
+                raise ValueError('Invalid Indian phone number')
+        return v
+
+
 # =========================================================================
 # USER SCHEMAS
 # =========================================================================

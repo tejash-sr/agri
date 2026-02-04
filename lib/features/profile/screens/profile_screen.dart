@@ -4,14 +4,177 @@ import 'package:provider/provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../providers/app_provider.dart';
+import '../../../providers/auth_provider.dart';
+import '../../auth/screens/login_screen.dart';
+import '../../farm/screens/farm_screen.dart';
+import 'edit_profile_screen.dart';
+import 'settings_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.logout, color: AppColors.error),
+            SizedBox(width: 12),
+            Text('Logout'),
+          ],
+        ),
+        content: const Text('Are you sure you want to logout? You will need to login again to access your account.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await context.read<AuthProvider>().logout();
+              if (context.mounted) {
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  (route) => false,
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+            ),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLanguageDialog(BuildContext context) {
+    final languages = [
+      {'code': 'en', 'name': 'English'},
+      {'code': 'hi', 'name': 'Hindi'},
+      {'code': 'mr', 'name': 'Marathi'},
+      {'code': 'gu', 'name': 'Gujarati'},
+      {'code': 'ta', 'name': 'Tamil'},
+      {'code': 'te', 'name': 'Telugu'},
+      {'code': 'kn', 'name': 'Kannada'},
+      {'code': 'pa', 'name': 'Punjabi'},
+    ];
+    
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Consumer<AppProvider>(
+        builder: (context, provider, _) {
+          return Container(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Select Language',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ...languages.map((lang) => ListTile(
+                  onTap: () {
+                    provider.setLanguage(lang['code']!);
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Language changed to ${lang['name']}'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                  leading: Radio<String>(
+                    value: lang['code']!,
+                    groupValue: provider.selectedLanguage,
+                    onChanged: (_) {
+                      provider.setLanguage(lang['code']!);
+                      Navigator.pop(context);
+                    },
+                    activeColor: AppColors.primaryGreen,
+                  ),
+                  title: Text(lang['name']!),
+                  trailing: provider.selectedLanguage == lang['code']
+                      ? const Icon(Icons.check, color: AppColors.primaryGreen)
+                      : null,
+                )),
+                const SizedBox(height: 16),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showAboutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.paleGreen,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.eco, color: AppColors.primaryGreen),
+            ),
+            const SizedBox(width: 12),
+            const Text('AgriSense Pro'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Version ${AppConstants.appVersion}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'AgriSense Pro is an AI-powered farming companion designed to help farmers make smarter decisions, increase yields, and maximize profits.',
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Made in India 🇮🇳',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Consumer<AppProvider>(
-      builder: (context, provider, child) {
+    return Consumer2<AppProvider, AuthProvider>(
+      builder: (context, appProvider, authProvider, child) {
+        final userName = authProvider.user?.fullName ?? appProvider.userName;
+        final userLocation = authProvider.user?.city != null 
+            ? '${authProvider.user!.city}, ${authProvider.user!.state ?? ''}'
+            : appProvider.userLocation;
+        
         return Scaffold(
           body: CustomScrollView(
             slivers: [
@@ -49,10 +212,10 @@ class ProfileScreen extends StatelessWidget {
                             ),
                             child: Center(
                               child: Text(
-                                provider.userName.isNotEmpty
-                                    ? provider.userName[0].toUpperCase()
+                                userName.isNotEmpty
+                                    ? userName[0].toUpperCase()
                                     : 'U',
-                                style: TextStyle(
+                                style: const TextStyle(
                                   color: AppColors.primaryGreen,
                                   fontSize: 36,
                                   fontWeight: FontWeight.bold,
@@ -62,7 +225,7 @@ class ProfileScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            provider.userName,
+                            userName,
                             style: const TextStyle(
                               color: AppColors.white,
                               fontSize: 22,
@@ -76,7 +239,7 @@ class ProfileScreen extends StatelessWidget {
                               const Icon(Icons.location_on, color: AppColors.white, size: 14),
                               const SizedBox(width: 4),
                               Text(
-                                provider.userLocation,
+                                userLocation,
                                 style: TextStyle(
                                   color: AppColors.white.withValues(alpha: 0.9),
                                   fontSize: 14,
@@ -92,7 +255,14 @@ class ProfileScreen extends StatelessWidget {
                 actions: [
                   IconButton(
                     icon: const Icon(Icons.edit, color: AppColors.white),
-                    onPressed: () {},
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const EditProfileScreen(),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -101,32 +271,135 @@ class ProfileScreen extends StatelessWidget {
                 sliver: SliverList(
                   delegate: SliverChildListDelegate([
                     // Stats Card
-                    _buildStatsCard(context, provider),
+                    _buildStatsCard(context, appProvider),
                     const SizedBox(height: 20),
                     
                     // Account Section
                     _buildSectionTitle(context, 'Account'),
-                    _buildMenuItem(context, Icons.person_outline, 'Personal Information', () {}),
-                    _buildMenuItem(context, Icons.agriculture, 'My Farms', () {}),
-                    _buildMenuItem(context, Icons.history, 'Activity History', () {}),
-                    _buildMenuItem(context, Icons.payment, 'Payment Methods', () {}),
+                    _buildMenuItem(
+                      context,
+                      Icons.person_outline,
+                      'Personal Information',
+                      () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const EditProfileScreen()),
+                      ),
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.agriculture,
+                      'My Farms',
+                      () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const FarmScreen()),
+                      ),
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.history,
+                      'Activity History',
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Activity history coming soon!'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.payment,
+                      'Payment Methods',
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Payment methods coming soon!'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                    ),
                     
                     const SizedBox(height: 20),
                     
                     // Preferences Section
                     _buildSectionTitle(context, 'Preferences'),
-                    _buildMenuItem(context, Icons.language, 'Language', () {}, trailing: 'English'),
-                    _buildMenuItem(context, Icons.notifications_outlined, 'Notifications', () {}),
-                    _buildMenuItem(context, Icons.dark_mode_outlined, 'Theme', () {}, trailing: 'Light'),
+                    _buildMenuItem(
+                      context,
+                      Icons.language,
+                      'Language',
+                      () => _showLanguageDialog(context),
+                      trailing: _getLanguageName(appProvider.selectedLanguage),
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.notifications_outlined,
+                      'Notifications',
+                      () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      ),
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.settings_outlined,
+                      'Settings',
+                      () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      ),
+                    ),
                     
                     const SizedBox(height: 20),
                     
                     // Support Section
                     _buildSectionTitle(context, 'Support'),
-                    _buildMenuItem(context, Icons.help_outline, 'Help Center', () {}),
-                    _buildMenuItem(context, Icons.chat_bubble_outline, 'Contact Us', () {}),
-                    _buildMenuItem(context, Icons.star_outline, 'Rate App', () {}),
-                    _buildMenuItem(context, Icons.info_outline, 'About', () {}),
+                    _buildMenuItem(
+                      context,
+                      Icons.help_outline,
+                      'Help Center',
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Help center: support@agrisensepro.com'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.chat_bubble_outline,
+                      'Contact Us',
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Contact: +91-1800-XXX-XXXX'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.star_outline,
+                      'Rate App',
+                      () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Thank you for your support! Rating feature coming soon.'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                    ),
+                    _buildMenuItem(
+                      context,
+                      Icons.info_outline,
+                      'About',
+                      () => _showAboutDialog(context),
+                    ),
                     
                     const SizedBox(height: 20),
                     
@@ -139,7 +412,7 @@ class ProfileScreen extends StatelessWidget {
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: () {},
+                        onPressed: () => _showLogoutDialog(context),
                         icon: const Icon(Icons.logout, color: AppColors.error),
                         label: const Text('Logout', style: TextStyle(color: AppColors.error)),
                         style: OutlinedButton.styleFrom(
@@ -167,6 +440,20 @@ class ProfileScreen extends StatelessWidget {
         );
       },
     );
+  }
+
+  String _getLanguageName(String code) {
+    const languages = {
+      'en': 'English',
+      'hi': 'Hindi',
+      'mr': 'Marathi',
+      'gu': 'Gujarati',
+      'ta': 'Tamil',
+      'te': 'Telugu',
+      'kn': 'Kannada',
+      'pa': 'Punjabi',
+    };
+    return languages[code] ?? 'English';
   }
 
   Widget _buildStatsCard(BuildContext context, AppProvider provider) {
